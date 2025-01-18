@@ -2,6 +2,10 @@ import discord, gspread, random
 from discord.ext import commands
 from oauth2client.service_account import ServiceAccountCredentials
 
+# Bot features:
+## Daily tips / facts
+
+
 # Bot Setup
 intents = discord.Intents.default()
 intents.typing = False
@@ -32,7 +36,6 @@ def connect_fact_sheet():
     return client.open("Service Dog Commands").sheet1  # Adjust the sheet name.
 
 fact_sheet = connect_fact_sheet()
-
 
 # Fetch Training Commands from Google Sheets
 @bot.command(name="command", help="Get a description of a training command. Usage: !command [keyword]")

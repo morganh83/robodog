@@ -1,2 +1,5 @@
 Creds.txt
 /venv/
+.tokens
+.env
+*.json

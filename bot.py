@@ -1,4 +1,5 @@
 import aiohttp, random, json, pytz, discord, os
+from datetime import datetime
 from discord.ext import commands, tasks
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -20,7 +21,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 TIP_URL = os.getenv("TIP_URL")
 CHALLENGE_URL = os.getenv("CHALLENGE_URL")
 
-# Install URL: https://discord.com/oauth2/authorize?client_id=1326939453033418793&scope=bot&permissions=689342466112
+TIP_TIME = '10:00'
+CHALLENGE_TIME = '12:00'
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
@@ -240,11 +242,15 @@ async def on_ready():
         config.setdefault(guild_id, {})
         config[guild_id]["name"] = guild.name
     save_config(config)
+    
 
     eastern = pytz.timezone("US/Eastern")
     scheduler = AsyncIOScheduler(timezone=eastern)
 
-    @scheduler.scheduled_job(CronTrigger(hour=10, minute=0))
+    now_eastern = datetime.now(eastern)
+    print(f"[Startup] Current Eastern Time: {now_eastern.strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
+    
+    @scheduler.scheduled_job(CronTrigger(hour=10, minute=0, timezone=eastern))
     async def scheduled_tips():
         for guild in bot.guilds:
             await post_daily_tip(guild_id=guild.id)

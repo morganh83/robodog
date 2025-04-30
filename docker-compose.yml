@@ -3,9 +3,11 @@ services:
   robodog:
     build: .
     container_name: robodog-bot
+    env_file: .env
     volumes:
       - ./data:/app/data
     environment:
+      - TZ=America/New_York
       - BOT_TOKEN=${BOT_TOKEN}
       - TIP_URL=${TIP_URL}
       - CHALLENGE_URL=${CHALLENGE_URL}

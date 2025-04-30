@@ -1,15 +1,29 @@
-import aiohttp, random, json, pytz, discord, os
+import aiohttp, random, json, pytz, discord, os, time, logging, sys
 from datetime import datetime
 from discord.ext import commands, tasks
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from logging.handlers import TimedRotatingFileHandler
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 CONFIG_FILE = "data/guild_config.json"
+LOG_DIR = "logs"
+os.makedirs(LOG_DIR, exist_ok=True)
+
 used_tips = set()
 used_challenges = set()
+
+TIP_TIME       = "10:00" # HH:MM 24-hour Eastern
+CHALLENGE_TIME = "12:00" # HH:MM 24-hour Eastern
+
+eastern = pytz.timezone("US/Eastern")
+scheduler = AsyncIOScheduler(timezone=eastern)
+
+def hm(s: str):
+    h, m = map(int, s.split(":"))
+    return h, m
 
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -18,11 +32,27 @@ TIPS_FILE = os.path.join(DATA_DIR, "used_tips.json")
 CHALLENGES_FILE = os.path.join(DATA_DIR, "used_challenges.json")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+# print(f"[INFO] BOT_TOKEN: {BOT_TOKEN}")
+# print(f"[INFO] STORED TOKEN: {os.getenv("BOT_TOKEN")}")
+
 TIP_URL = os.getenv("TIP_URL")
 CHALLENGE_URL = os.getenv("CHALLENGE_URL")
 
-TIP_TIME = '10:00'
-CHALLENGE_TIME = '12:00'
+handler = TimedRotatingFileHandler(
+    filename=f"{LOG_DIR}/bot.log",
+    when="D",           # rotate by day
+    interval=30,        # …every 30 days
+    backupCount=6,      # keep 6 old files
+    encoding="utf-8"
+)
+fmt = "%(asctime)s  %(levelname)-7s  %(name)s  %(message)s"
+handler.setFormatter(logging.Formatter(fmt))
+logger = logging.getLogger("DeltaDog")     # root app logger
+logger.setLevel(logging.INFO)
+logger.addHandler(handler)
+stream = logging.StreamHandler(sys.stdout)
+stream.setFormatter(logging.Formatter(fmt))
+logger.addHandler(stream)
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
@@ -49,14 +79,26 @@ used_tips = load_used(TIPS_FILE)
 used_challenges = load_used(CHALLENGES_FILE)
 
 @bot.event
+async def on_command(ctx):
+    logger.info("CMD  user=%s  guild=%s  cmd=%s  args=%s",
+                ctx.author, ctx.guild and ctx.guild.name, ctx.command, ctx.args[2:])
+
+@bot.event
+async def on_command_completion(ctx):
+    logger.info("OK   user=%s  cmd=%s", ctx.author, ctx.command)
+
+@bot.event
 async def on_command_error(ctx, error):
-    print(f"[ERROR] Command error: {error}")
-    await ctx.send(f"⚠️ Error: {str(error)}")
+    logger.error("ERR  user=%s  cmd=%s  err=%s", ctx.author, ctx.command, error)
+    await ctx.send(f"⚠️ Error: {error}")
 
 @bot.event
 async def on_message(message):
+    if message.author.bot:
+        return
     print(f"Received message: {message.content} in guild {message.guild.name}")
     await bot.process_commands(message)
+
 
 @bot.command(name="diagnose")
 @commands.has_permissions(administrator=True)
@@ -122,6 +164,7 @@ async def post_daily_tip(guild_id=None, channel=None):
             return
 
     data = await fetch_data(TIP_URL)
+
     tip = rotate_item(data, used_tips)
     used_tips.add(json.dumps(tip, sort_keys=True))
     save_used(TIPS_FILE, used_tips)
@@ -233,34 +276,35 @@ async def post_weekly_challenge(guild_id=None, channel=None):
 
     await channel.send(embed=embed)
 
+
+@scheduler.scheduled_job(CronTrigger(hour=hm(TIP_TIME)[0], minute=hm(TIP_TIME)[1], timezone=eastern))
+async def scheduled_tips():
+    for guild in bot.guilds:
+        logger.info("[Tip job] sent tip to %s", guild.name)
+        logger.warning("[Tip job] no TIP_URL response")
+        await post_daily_tip(guild_id=guild.id)
+
+@scheduler.scheduled_job(CronTrigger(day_of_week="mon", hour=hm(CHALLENGE_TIME)[0], minute=hm(CHALLENGE_TIME)[1], timezone=eastern))
+async def scheduled_challenges():
+    for guild in bot.guilds:
+        logger.info("[Challenge job] sent tip to %s", guild.name)
+        logger.warning("[Challenge job] no TIP_URL response")
+        await post_weekly_challenge(guild_id=guild.id)
+
+@bot.event
+async def setup_hook():
+    scheduler.start()
+    print("[Scheduler] started")
+
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user}")
+    print(f"Bot is ready!")
     config = load_config()
     for guild in bot.guilds:
         guild_id = str(guild.id)
         config.setdefault(guild_id, {})
         config[guild_id]["name"] = guild.name
     save_config(config)
-    
-
-    eastern = pytz.timezone("US/Eastern")
-    scheduler = AsyncIOScheduler(timezone=eastern)
-
-    now_eastern = datetime.now(eastern)
-    print(f"[Startup] Current Eastern Time: {now_eastern.strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
-    
-    @scheduler.scheduled_job(CronTrigger(hour=10, minute=0, timezone=eastern))
-    async def scheduled_tips():
-        for guild in bot.guilds:
-            await post_daily_tip(guild_id=guild.id)
-
-    @scheduler.scheduled_job(CronTrigger(day_of_week="mon", hour=12, minute=0))
-    async def scheduled_challenges():
-        for guild in bot.guilds:
-            await post_weekly_challenge(guild_id=guild.id)
-
-    scheduler.start()
 
 @bot.command(name="deltahelp")
 @commands.has_permissions(administrator=True)
@@ -296,7 +340,11 @@ async def delta_help(ctx):
         value="Display this command reference. (Admins only)",
         inline=False
     )
-
+    embed.add_field(
+        name="`!time`",
+        value="Display the current Bot Time.",
+        inline=False
+    )
     await ctx.send(embed=embed)
 
 @bot.event
@@ -310,10 +358,17 @@ async def on_guild_join(guild):
             "tip_channel": None,
             "challenge_channel": None
         }
-
         save_config(config)
         print(f"[INFO] Initialized config for new guild: {guild.name} ({guild_id})")
 
+@bot.command(name="time")
+async def bot_time_cmd(ctx):
+    # naive datetime → whatever /etc/localtime is set to inside the container
+    now   = datetime.now()
+    tzstr = time.tzname[0]  # e.g., 'UTC', 'EST'
+    await ctx.send(
+        f"🕒 Bot clock: {now.strftime('%Y-%m-%d %H:%M:%S')} {tzstr}"
+    )
 
 @bot.command(name="tip")
 async def manual_tip(ctx):
